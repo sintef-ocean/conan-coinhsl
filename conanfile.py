@@ -1,12 +1,24 @@
-from conans import AutoToolsBuildEnvironment, ConanFile, tools
-from conans.tools import PkgConfig
-from conans.errors import ConanInvalidConfiguration
 import os
+from conan import ConanFile
+from conan.errors import ConanInvalidConfiguration
+from conan.tools.build import cross_building
+from conan.tools.files import get, unzip, copy, rmdir, rm
+from conan.tools.gnu import (
+    Autotools, AutotoolsDeps, AutotoolsToolchain,
+    PkgConfig, PkgConfigDeps
+    )
+from conan.tools.meson import Meson, MesonToolchain
+from conan.tools.layout import basic_layout
+from conan.tools.microsoft.visual import is_msvc
+from conan.tools.scm import Git, Version
+from conan.tools.env import VirtualRunEnv
+
+
+required_conan_version = ">=2.0.0"
 
 
 class CoinHslConan(ConanFile):
     name = "coinhsl"
-    version = "2014.01.17"
     license = ("http://www.hsl.rl.ac.uk/licencing.html",)
     author = "SINTEF Ocean"
     url = "https://github.com/sintef-ocean/conan-coinhsl"
@@ -15,54 +27,54 @@ class CoinHslConan(ConanFile):
         "HSL provides a number of linear solvers that can be used in IPOPT"
     topics = ("Linear solver", "COIN-OR")
     settings = "os", "compiler", "build_type", "arch"
+    package_type = "library"
     options = {
         "shared": [True, False],
         "fPIC": [True, False],
-        "hsl_archive": "ANY"
+        "with_full": [True, False],
+        "hsl_archive": ["ANY"]
     }
-    default_options = {"shared": True, "fPIC": True, "hsl_archive": None}
-    generators = "pkg_config"
+    default_options = {
+        "shared": False,
+        "fPIC": True,
+        "with_full": True,
+        "hsl_archive": None}
 
     _coin_helper = "ThirdParty-HSL"
-    _coin_helper_branch = "stable/2.1"
-    _autotools = None
+    _coin_helper_branch = "stable/2.2"
 
-    def _configure_autotools(self):
-        if self._autotools:
-            return self._autotools
-
-        with tools.environment_append({"PKG_CONFIG_PATH": self.build_folder}):
-            self._autotools = AutoToolsBuildEnvironment(self)
-            self._autotools.libs = []
-
-            # OpenBLAS provides both blas and lapack
-            pkg_openblas = PkgConfig("openblas")
-            pkg_coinmetis = PkgConfig("coinmetis")
-            auto_args = []
-            auto_args.append(
-                "--with-lapack={}".format(" ".join(pkg_openblas.libs)))
-            auto_args.append(
-                "--with-metis-lflags={}".format(" ".join(pkg_coinmetis.libs)))
-            auto_args.append(
-                "--with-metis-cflags={}".format(" ".join(pkg_coinmetis.cflags)))
-
-            self._autotools.configure(args=auto_args)
-            return self._autotools
+    def config_options(self):
+        if self.options.shared:
+            self.options.rm_safe("fPIC")
 
     def configure(self):
-        if self.settings.compiler == "Visual Studio":
-            raise ConanInvalidConfiguration(
-                "This recipe is does not support Visual Studio")
+        self.settings.rm_safe("compiler.libcxx")
+        self.settings.rm_safe("compiler.cppstd")
 
-        self.options["openblas"].shared = self.options.shared
-        self.options["openblas"].build_lapack = True
-        # self.options["openblas"].use_thread = True
-        # self.options["openblas"].dynamic_arch = True
+    def requirements(self):
+        if self.options.with_full:
+            # Not needed for not with_full, e.g. ma27
+            self.requires("metis/5.2.1")
+            self.requires("openblas/[>=0.3.30]")
+
+    def validate(self):
+        if is_msvc(self) and Version(self.version).major < 2023:
+            raise ConanInvalidConfiguration(
+                f"{self.ref} only supports Windows build for since major version 2023")
+        if is_msvc(self) and self.info.options.shared:
+            raise ConanInvalidConfiguration(f"{self.ref} can not be built as shared on Visual Studio and msvc.")
 
     def build_requirements(self):
+        if Version(self.version).major > 2022:
+            self.tool_requires("meson/[>=1.2.3 <2]")
+        else:
+            self.tool_requires("libtool/[>=2.4.7 <3]")
+
+        if not self.conf.get("tools.gnu:pkg_config", default=False, check_type=str):
+            self.tool_requires("pkgconf/[>=2.2 <3]")
 
         if not self.options.hsl_archive:
-            archive_uri = tools.get_env("HSL_ARCHIVE")
+            archive_uri = os.environ.get("HSL_ARCHIVE", None)
             self.output.info("Checking environment variable HSL_ARCHIVE")
             if archive_uri is None:
                 raise ConanInvalidConfiguration(
@@ -70,17 +82,20 @@ class CoinHslConan(ConanFile):
                     "url, or environment variable HSL_ARCHIVE must be set")
             self.options.hsl_archive = archive_uri
 
-    def requirements(self):
-        self.requires("coinmetis/4.0.3@sintef/stable")
-        self.requires("openblas/[>=0.3.12]")
+    def layout(self):
+        if Version(self.version).major > 2022:
+            basic_layout(self, src_folder="coinhsl", build_folder="build")
+        else:
+            basic_layout(self)
 
     def source(self):
-        _git = tools.Git()
-        _git.clone("https://github.com/coin-or-tools/{}.git"
-                   .format(self._coin_helper),
-                   branch=self._coin_helper_branch,
-                   shallow=True)
+        if Version(self.version).major < 2023:
+            git = Git(self)
+            git.clone(f"https://github.com/coin-or-tools/{self._coin_helper}.git",
+                      target=self.source_folder,
+                      args=[f"--branch {self._coin_helper_branch}", "--single-branch", "--depth 1"])
 
+    def generate(self):
         hsl_archive = self.options.hsl_archive
 
         if hsl_archive is None:
@@ -88,49 +103,91 @@ class CoinHslConan(ConanFile):
                 "option:hsl_archive must point to an hsl archive file or url")
 
         hsl_archive = str(hsl_archive)
+        if Version(self.version).major < 2023:
+            hsl_destination = os.path.join(self.source_folder, "coinhsl")
+        else:
+            hsl_destination = self.source_folder
         if hsl_archive.startswith("http"):
-            hsl_user = tools.get_env("HSL_USER")
-            hsl_password = tools.get_env("HSL_PASSWORD")
+            hsl_user = os.environ.get("HSL_USER", None)
+            hsl_password = os.environ.get("HSL_PASSWORD", None)
             auth = None
             if hsl_user is not None and hsl_password is not None:
                 auth = (hsl_user, hsl_password)
-            tools.get(hsl_archive,
-                      auth=auth,
-                      strip_root=True,
-                      destination="coinhsl")
+            get(hsl_archive,
+                auth=auth,
+                strip_root=True,
+                destination=hsl_destination)
         else:
             self.output.info("Retrieving HSL from {}".format(hsl_archive))
-            tools.untargz(hsl_archive, strip_root=True, destination="coinhsl")
+            unzip(self, hsl_archive, strip_root=True,
+                  destination=hsl_destination)
+
+        deps = PkgConfigDeps(self)
+        deps.generate()
+
+        if Version(self.version).major > 2022:
+            tc = MesonToolchain(self)
+            tc.generate()
+        else:
+            if not cross_building(self):
+                VirtualRunEnv(self).generate(scope="build")
+
+            def yes_no(v): return "yes" if v else "no"
+
+            ac = AutotoolsToolchain(self)
+            ac.configure_args.extend([
+                f"--enable-shared={yes_no(self.options.shared)}",
+                f"--enable-static={yes_no(not self.options.shared)}",
+                f"--with-pic={yes_no(self.options.get_safe('fPIC', False))}"
+            ])
+
+            if self.options.with_full:
+                metis = PkgConfig(self, "metis", pkg_config_path=os.path.join(self.build_folder, "conan"))
+                lapack = PkgConfig(self, "openblas", pkg_config_path=os.path.join(self.build_folder, "conan"))
+
+                ac.configure_args.extend([
+                    f'--with-lapack-lflags={" ".join(["-L" + " -L".join(lapack.libdirs), "-l" + " -l".join(lapack.libs)])}',
+                    f'--with-metis-lflags={" ".join(["-L" + " -L".join(metis.libdirs), "-l" + " -l".join(metis.libs)])}',
+                    f'--with-metis-cflags={" ".join(["-I" + " -I".join(metis.includedirs), "-D" + " -D".join(metis.defines)])}',
+                ])
+
+            ac.generate()
+            at = AutotoolsDeps(self)
+            at.generate()
 
     def build(self):
-        # TODO:
-        #with self._build_context():
-        #    packs = ["mingw-w64-x86_64-gcc-fortran",
-        #             "mingw-w64-x86_64-lapack",
-        #             "gcc-fortran"]
-        #    self.run("pacman -S --noconfirm {}".format(" ".join(packs), win_bash=True))
-        autotools = self._configure_autotools()
-        autotools.make(args=["--jobs=1"])  # otherwise it fails
+        if Version(self.version).major > 2022:
+            meson = Meson(self)
+            meson.configure()
+            meson.build()
+        else:
+            autotools = Autotools(self)
+            autotools.configure()
+            autotools.make(args=["--jobs=1"])  # fails otherwise
 
     def package(self):
-        autotools = self._configure_autotools()
-        autotools.install()
+        if Version(self.version).major > 2022:
+            meson = Meson(self)
+            meson.install()
+        else:
+            autotools = Autotools(self)
+            autotools.install()
+            rm(self, "*.la", os.path.join(self.package_folder, "lib"))
 
-        tools.rmdir(os.path.join(self.package_folder, "lib", "pkgconfig"))
-        os.unlink(os.path.join(self.package_folder, "lib", "libcoinhsl.la"))
-        self.copy("LICENCE", src="coinhsl", dst="licenses")
+        rmdir(self, os.path.join(self.package_folder, "lib", "pkgconfig"))
+        copy(self, "LICENCE", self.source_folder,
+             os.path.join(self.package_folder, "licenses"))
 
     def package_info(self):
         self.cpp_info.libs = ["coinhsl"]
-        self.cpp_info.includedirs = [os.path.join("include", "coin-or", "hsl")]
+        if Version(self.version).major < 2023:
+            self.cpp_info.includedirs = [os.path.join("include", "coin-or", "hsl")]
 
-        # Did not compile with flang, so assume gfortran
-        if tools.os_info.is_linux:
-            self.cpp_info.system_libs.append("gfortran")
-            self.cpp_info.system_libs.append("gomp")  # openMP runtime
+        if self.settings.os in ["Linux", "FreeBSD"]:
+            # This assumes gfortran, gcc
+            self.cpp_info.system_libs.extend(["gfortran", "m"])
+            if self.options.with_full:
+                self.cpp_info.system_libs.append("gomp")  # gcc, omp for clang..
 
     def package_id(self):
         del self.info.options.hsl_archive
-
-    def imports(self):
-        self.copy("license*", dst="licenses", folder=True, ignore_case=True)
