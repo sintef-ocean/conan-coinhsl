@@ -14,7 +14,7 @@ from conan.tools.scm import Git, Version
 from conan.tools.env import VirtualRunEnv
 
 
-required_conan_version = ">=2.0.0"
+required_conan_version = ">=2.18.0"
 
 
 class CoinHslConan(ConanFile):
@@ -62,6 +62,7 @@ class CoinHslConan(ConanFile):
             raise ConanInvalidConfiguration(
                 f"{self.ref} only supports Windows build for since major version 2023")
         if is_msvc(self) and self.info.options.shared:
+            #TODO: figure out steps needed, perhaps some renaming of libcoinhsl.dll.a
             raise ConanInvalidConfiguration(f"{self.ref} can not be built as shared on Visual Studio and msvc.")
 
     def build_requirements(self):
@@ -72,6 +73,8 @@ class CoinHslConan(ConanFile):
 
         if not self.conf.get("tools.gnu:pkg_config", default=False, check_type=str):
             self.tool_requires("pkgconf/[>=2.2 <3]")
+
+        #TODO: figure out what must be installed. msys2 and gfortran?
 
         if not self.options.hsl_archive:
             archive_uri = os.environ.get("HSL_ARCHIVE", None)

@@ -70,4 +70,7 @@ with_full | True | [True, False]
 ## Known recipe issues
 
   - Package developer was unable to compile the library with `flang` version 7.
-  - The library has not successfully been compiled on Windows, but it should be possible, see [coinbrew](http://github.com/coin-or/coinbrew).
+  - Building on Windows incomplete and require more work.
+  - Building on Windows should be possible, see
+    [coinbrew](http://github.com/coin-or/coinbrew) or by using the recent `meson` build
+    system.
