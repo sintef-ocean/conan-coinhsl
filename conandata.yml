@@ -1,0 +1,5 @@
+sources:
+  "2014.01.10":
+    build_scripts:
+      url: "https://github.com/coin-or-tools/ThirdParty-HSL/archive/refs/tags/releases/2.2.6.tar.gz"
+      sha256: "71f382f537f076c30fffc08b120796d48c766e41bb91576b4566e437f048b98c"

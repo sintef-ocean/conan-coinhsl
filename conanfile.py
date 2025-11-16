@@ -10,7 +10,7 @@ from conan.tools.gnu import (
 from conan.tools.meson import Meson, MesonToolchain
 from conan.tools.layout import basic_layout
 from conan.tools.microsoft.visual import is_msvc
-from conan.tools.scm import Git, Version
+from conan.tools.scm import Version
 from conan.tools.env import VirtualRunEnv
 
 
@@ -38,16 +38,16 @@ class CoinHslConan(ConanFile):
         "shared": False,
         "fPIC": True,
         "with_full": True,
-        "hsl_archive": None}
-
-    _coin_helper = "ThirdParty-HSL"
-    _coin_helper_branch = "stable/2.2"
+        "hsl_archive": None
+    }
 
     def config_options(self):
-        if self.options.shared:
-            self.options.rm_safe("fPIC")
+        if self.settings.os == "Windows":
+            del self.options.fPIC
 
     def configure(self):
+        if self.options.shared:
+            self.options.rm_safe("fPIC")
         self.settings.rm_safe("compiler.libcxx")
         self.settings.rm_safe("compiler.cppstd")
 
@@ -74,7 +74,7 @@ class CoinHslConan(ConanFile):
         if not self.conf.get("tools.gnu:pkg_config", default=False, check_type=str):
             self.tool_requires("pkgconf/[>=2.2 <3]")
 
-        #TODO: figure out what must be installed. msys2 and gfortran?
+        #TODO: figure out what must be installed. msys2 and gfortran? Template file from CCI autotools_package is helpful
 
         if not self.options.hsl_archive:
             archive_uri = os.environ.get("HSL_ARCHIVE", None)
@@ -93,10 +93,7 @@ class CoinHslConan(ConanFile):
 
     def source(self):
         if Version(self.version).major < 2023:
-            git = Git(self)
-            git.clone(f"https://github.com/coin-or-tools/{self._coin_helper}.git",
-                      target=self.source_folder,
-                      args=[f"--branch {self._coin_helper_branch}", "--single-branch", "--depth 1"])
+            get(self, **self.conan_data["sources"][self.version]["build_scripts"], strip_root=True)
 
     def generate(self):
         hsl_archive = self.options.hsl_archive
@@ -140,8 +137,7 @@ class CoinHslConan(ConanFile):
             ac = AutotoolsToolchain(self)
             ac.configure_args.extend([
                 f"--enable-shared={yes_no(self.options.shared)}",
-                f"--enable-static={yes_no(not self.options.shared)}",
-                f"--with-pic={yes_no(self.options.get_safe('fPIC', False))}"
+                f"--enable-static={yes_no(not self.options.shared)}"
             ])
 
             if self.options.with_full:
