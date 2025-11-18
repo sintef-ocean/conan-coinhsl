@@ -53,9 +53,6 @@ class CoinHslConan(ConanFile):
         self.settings.rm_safe("compiler.libcxx")
         self.settings.rm_safe("compiler.cppstd")
 
-        if self.settings.os == "Windows":
-            self.options["msys2"].additional_packages = "mingw-w64-ucrt-x86_64-gcc-fortran"
-
     def requirements(self):
         if self.options.with_full:
             # Not needed for not with_full, e.g. ma27
@@ -65,19 +62,12 @@ class CoinHslConan(ConanFile):
     def validate(self):
         if is_msvc(self) and self.info.options.shared:
             raise ConanInvalidConfiguration(f"{self.ref} can not be built as shared with msvc.")
+        if Version(self.version).major < 2023 and self.settings.os == "Windows":
+            raise ConanInvalidConfiguration(f"{self.ref} can not be built on Windows yet")
 
     def build_requirements(self):
         if Version(self.version).major > 2022:
             self.tool_requires("meson/[>=1.2.3 <2]")
-        else:
-            self.tool_requires("gnu-config/cci.20210814")
-
-            if self._settings_build.os == "Windows":
-                self.win_bash = True
-                if not self.conf.get("tools.microsoft.bash:path", check_type=str):
-                    self.tool_requires("msys2/cci.latest")
-            if is_msvc(self):
-                self.tool_requires("automake/1.16.5")
 
         if not self.conf.get("tools.gnu:pkg_config", default=False, check_type=str):
             self.tool_requires("pkgconf/[>=2.2 <3]")
@@ -122,20 +112,7 @@ class CoinHslConan(ConanFile):
                     f'--with-metis-cflags={" ".join(["-I" + " -I".join(metis.includedirs), "-D" + " -D".join(metis.defines)])}',
                 ])
 
-            env = ac.environment()
-
-            if is_msvc(self):
-                compile_wrapper = unix_path(self, self.conf.get("user.automake:compile-wrapper", check_type=str))
-                ar_wrapper = unix_path(self, self.conf.get("user.automake:lib-wrapper", check_type=str))
-                env.define("CC", f"{compile_wrapper} cl -nologo")
-                env.define("CXX", f"{compile_wrapper} cl -nologo")
-                env.define("LD", f"{compile_wrapper} link -nologo")
-                env.define("AR", f"{ar_wrapper} lib")
-                env.define("NM", "dumpbin -symbols")
-                env.define("OBJDUMP", ":")
-                env.define("RANLIB", ":")
-                env.define("STRIP", ":")
-            ac.generate(env)
+            ac.generate()
 
     def build(self):
         hsl_archive = self.options.hsl_archive
